@@ -27,6 +27,11 @@ Metadata:
         Parameters:
           - CodePipelineName
           - BuildBranchName
+      -
+        Label:
+          default: Cost tag settings
+        Parameters:
+          - CostTag
 Parameters:
   RepositoryName:
     Type: String
@@ -73,6 +78,7 @@ Parameters:
   CostTag:
     Type: String
     Description: Cost tag name
+    Default: ''
 Conditions:
   HasCustomDomain:
     Fn::And:
