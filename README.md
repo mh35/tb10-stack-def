@@ -1,2 +1,2 @@
-# tb10-stack-def
-技術書典10のCloudFormationスタック定義
+# 技術書典10「AWS CodePipelineを使った簡易CMS」スタック定義
+技術書典10の「AWS CodePipelineを使った簡易CMS」で用いたCloudFormationスタック定義です
