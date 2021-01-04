@@ -1,0 +1,550 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CodePipeline CMS template
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: CodeCommit settings
+        Parameters:
+          - RepositoryName
+      -
+        Label:
+          default: CloudFront settings
+        Parameters:
+          - CloudFrontDomainName
+          - CloudFrontCertificateArn
+          - EnableCloudFrontIpV6
+      -
+        Label:
+          default: CodeBuild settings
+        Parameters:
+          - CodeBuildComputeType
+          - CodeBuildMachineType
+      -
+        Label:
+          default: CodePipeline settings
+        Parameters:
+          - CodePipelineName
+          - BuildBranchName
+Parameters:
+  RepositoryName:
+    Type: String
+    Description: Repository name
+  CloudFrontDomainName:
+    Type: String
+    Description: CloudFront domain name
+    Default: ''
+  CloudFrontCertificateArn:
+    Type: String
+    Description: CloudFront ACM certificate ARN
+    Default: ''
+  EnableCloudFrontIpV6:
+    Type: String
+    Description: Enable IPv6 or not for CloudFront
+    AllowedValues:
+      - true
+      - false
+    Default: true
+  CodeBuildComputeType:
+    Type: String
+    Description: CodeBuild compute type
+    AllowedValues:
+      - BUILD_GENERAL1_SMALL
+      - BUILD_GENERAL1_MEDIUM
+      - BUILD_GENERAL1_LARGE
+      - BUILD_GENERAL1_2XLARGE
+    Default: BUILD_GENERAL1_SMALL
+  CodeBuildMachineType:
+    Type: String
+    Description: CodeBuild machine type
+    AllowedValues:
+      - LINUX_CONTAINER
+      - LINUX_GPU_CONTAINER
+      - ARM_CONTAINER
+    Default: LINUX_CONTAINER
+  CodePipelineName:
+    Type: String
+    Description: CodePipeline name
+  BuildBranchName:
+    Type: String
+    Description: Build branch name
+    Default: master
+  CostTag:
+    Type: String
+    Description: Cost tag name
+Conditions:
+  HasCustomDomain:
+    Fn::And:
+      - Fn::Not:
+        - !Equals
+          - !Ref CloudFrontDomainName
+          - ''
+      - Fn::Not:
+        - !Equals
+          - !Ref CloudFrontCertificateArn
+          - ''
+  HasCostTag:
+    Fn::Not:
+      - !Equals
+        - !Ref CostTag
+        - ''
+Resources:
+  # AWS CodeCommitレポジトリ
+  Repository:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Ref RepositoryName
+      Tags:
+        -
+          Key: CostTag
+          Value:
+            Fn::If:
+              - HasCostTag
+              - !Ref CostTag
+              - !Ref AWS::StackName
+  # AWS CodePipelineの成果物を保管するAmazon S3バケット
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        -
+          Key: CostTag
+          Value:
+            Fn::If:
+              - HasCostTag
+              - !Ref CostTag
+              - !Ref AWS::StackName
+    DeletionPolicy: Retain
+  # デプロイ先のAmazon S3バケット
+  ContentBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        -
+          Key: CostTag
+          Value:
+            Fn::If:
+              - HasCostTag
+              - !Ref CostTag
+              - !Ref AWS::StackName
+    DeletionPolicy: Retain
+  # 3と4に付属する各種リソース
+  LogBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        -
+          Key: CostTag
+          Value:
+            Fn::If:
+              - HasCostTag
+              - !Ref CostTag
+              - !Ref AWS::StackName
+    DeletionPolicy: Retain
+  ContentBucketCFAccessIdConf:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Ref AWS::StackName
+  ContentBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ContentBucket
+      PolicyDocument:
+        Statement:
+          -
+            Action:
+              - s3:ListBucket
+            Effect: Allow
+            Resource: !Join
+              - ':'
+              - - 'arn:aws:s3::'
+                - !Ref ContentBucket
+            Principal:
+              AWS: !Join
+                - /
+                - - arn:aws:iam::cloudfront:user
+                  - !Join
+                    - ' '
+                    - - 'CloudFront Origin Access Identity'
+                      - !Ref ContentBucketCFAccessIdConf
+          -
+            Action: s3:GetObject
+            Effect: Allow
+            Resource: !Join
+              - ':'
+              - - 'arn:aws:s3::'
+                - !Join
+                  - /
+                  - - !Ref ContentBucket
+                    - '*'
+            Principal:
+              AWS: !Join
+                - /
+                - - arn:aws:iam::cloudfront:user
+                  - !Join
+                    - ' '
+                    - - 'CloudFront Origin Access Identity'
+                      - !Ref ContentBucketCFAccessIdConf
+  LogBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LogBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          -
+            Action:
+              - s3:ListBucket
+              - s3:GetBucketAcl
+              - s3:PutBucketAcl
+            Effect: Allow
+            Resource: !Join
+              - ':'
+              - - 'arn:aws:s3::'
+                - !Ref LogBucket
+            Principal:
+              AWS: !Join
+                - ':'
+                - - 'arn:aws:iam:'
+                  - !Ref AWS::AccountId
+                  - root
+          -
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+            Effect: Allow
+            Resource: !Join
+              - ':'
+              - - 'arn:aws:s3::'
+                - !Join
+                  - '/'
+                  - - !Ref LogBucket
+                    - '*'
+            Principal:
+              AWS: !Join
+                - ':'
+                - - 'arn:aws:iam:'
+                  - !Ref AWS::AccountId
+                  - root
+  # Amazon CloudFrontディストリビューション
+  ContentDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Aliases:
+          Fn::If:
+            - HasCustomDomain
+            -
+              - !Ref CloudFrontDomainName
+            - []
+        ViewerCertificate:
+          Fn::If:
+            - HasCustomDomain
+            -
+              AcmCertificateArn:
+                !Ref CloudFrontCertificateArn
+              MinimumProtocolVersion: TLSv1.1_2016
+              SslSupportMethod: sni-only
+            -
+              CloudFrontDefaultCertificate: true
+        Origins:
+          -
+            Id: S3Origin
+            DomainName:
+              !GetAtt ContentBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: !Join
+                - /
+                - - origin-access-identity
+                  - cloudfront
+                  - !Ref ContentBucketCFAccessIdConf
+        Enabled: true
+        DefaultRootObject: index.html
+        Comment: !Join
+          - ' '
+          - - !Ref AWS::StackName
+            - distribution
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ForwardedValues:
+            QueryString: false
+          ViewerProtocolPolicy: redirect-to-https
+        Logging:
+          Bucket: !GetAtt LogBucket.DomainName
+          Prefix: 'cloudfront/'
+        IPV6Enabled: !Ref EnableCloudFrontIpV6
+      Tags:
+        -
+          Key: CostTag
+          Value:
+            Fn::If:
+              - HasCostTag
+              - !Ref CostTag
+              - !Ref AWS::StackName
+  # 6のためのロール
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonS3FullAccess'
+      Policies:
+        -
+          PolicyName: CodeBuildAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+      Tags:
+        -
+          Key: CostTag
+          Value:
+            Fn::If:
+              - HasCostTag
+              - !Ref CostTag
+              - !Ref AWS::StackName
+  # AWS CodeBuildプロジェクト
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: !Ref CodeBuildComputeType
+        Image: aws/codebuild/standard:4.0
+        Type: !Ref CodeBuildMachineType
+      ServiceRole: !Ref CodeBuildRole
+      Tags:
+        -
+          Key: CostTag
+          Value:
+            Fn::If:
+              - HasCostTag
+              - !Ref CostTag
+              - !Ref AWS::StackName
+  # 8のためのロール
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        -
+          PolicyName: PipelinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                  - 's3:GetObjectVersion'
+                  - 's3:GetBucketVersioning'
+                Resource: !Join
+                  - /
+                  - - !GetAtt ContentBucket.Arn
+                    - '*'
+              -
+                Effect: Allow
+                Action:
+                  - 'cloudformation:*'
+                  - 'codecommit:*'
+                  - 'codedeploy:*'
+                  - 'codebuild:*'
+                  - 's3:*'
+                  - 'ecs:*'
+                  - 'elasticloadbalancing:*'
+                  - 'autoscaling:*'
+                  - 'iam:PassRole'
+                Resource: '*'
+      Tags:
+        -
+          Key: CostTag
+          Value:
+            Fn::If:
+              - HasCostTag
+              - !Ref CostTag
+              - !Ref AWS::StackName
+  # AWS CodePipelineパイプライン
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !GetAtt PipelineRole.Arn
+      Name: !Ref CodePipelineName
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        -
+          Name: Source
+          Actions:
+            -
+              Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: 1
+              Configuration:
+                RepositoryName: !Ref RepositoryName
+                BranchName: !Ref BuildBranchName
+                PollForSourceChanges: false
+              RunOrder: 1
+              OutputArtifacts:
+                -
+                  Name: SourceArtifact
+        -
+          Name: Build
+          Actions:
+            -
+              Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+              RunOrder: 1
+              InputArtifacts:
+                -
+                  Name: SourceArtifact
+              OutputArtifacts:
+                -
+                  Name: BuildArtifact
+        -
+          Name: Deploy
+          Actions:
+            -
+              Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: S3
+                Version: 1
+              InputArtifacts:
+                -
+                  Name: BuildArtifact
+              Configuration:
+                BucketName: !Ref ContentBucket
+                Extract: true
+              RunOrder: 1
+      Tags:
+        -
+          Key: CostTag
+          Value:
+            Fn::If:
+              - HasCostTag
+              - !Ref CostTag
+              - !Ref AWS::StackName
+  # 8を起動するためのEventBridgeルール
+  RepositoryEventRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        -
+          PolicyName: repositoryPipelineEventPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              -
+                Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Join
+                  - ':'
+                  - - 'arn:aws:codepipeline'
+                    - !Ref AWS::Region
+                    - !Ref AWS::AccountId
+                    - !Ref CodePipelineName
+      Tags:
+        -
+          Key: CostTag
+          Value:
+            Fn::If:
+              - HasCostTag
+              - !Ref CostTag
+              - !Ref AWS::StackName
+  RepositoryPipelineEvent:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - CodeCommit Repository State Change
+        resources:
+          - !Join
+            - ':'
+            - - 'arn:aws:codecommit'
+              - !Ref AWS::Region
+              - !Ref AWS::AccountId
+              - !Ref RepositoryName
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - !Ref BuildBranchName
+      Targets:
+        -
+          Arn: !Join
+            - ':'
+            - - 'arn:aws:codepipeline'
+              - !Ref AWS::Region
+              - !Ref AWS::AccountId
+              - !Ref CodePipelineName
+          RoleArn: !GetAtt RepositoryEventRole.Arn
+          Id: codePipelineRepositoryTarget
